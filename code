@@ -1,116 +1,113 @@
 """
-LLM_Multi-Agent Customer Support Assistant
-File: LLM_Multi-Agent_Customer_Support_Assistant.py
+LLM_Multi-Agent Study Assistant
+File: LLM_Multi-Agent_Study_Assistant.py
 
-This is a self-contained Python implementation (single-file) of an LLM-powered
-Multi-Agent Customer Support Assistant suitable for the Kaggle Enterprise Agents
-capstone project. It demonstrates:
-- Multi-agent orchestration (IntentAgent, ReplyAgent, EscalationAgent, Coordinator)
-- Tools: simple storage tool (TicketStore), optional LLM wrapper (pluggable)
+A self-contained Python implementation (single-file) of an LLM-powered
+Multi-Agent Study Assistant designed for the Kaggle capstone in the Study/Enterprise
+Agents style. The notebook demonstrates:
+- Multi-agent orchestration (GoalAgent, PlannerAgent, QuizAgent, ReviewAgent, Coordinator)
+- Tools: ProgressStore (custom tool) and optional CalendarTool stub
 - Sessions & Memory: SessionService and MemoryBank (in-memory + file-backed)
 - Observability: structured logging and simple metrics
-- Agent evaluation: simple test harness and accuracy metric
+- Agent evaluation: simple user-simulation tests and performance tracking
 
 USAGE:
-- By default this file runs in MOCK mode (no external API calls) so it runs
-  instantly and safely in Kaggle notebooks.
-- To enable a real LLM, implement the llm_call function to call your provider
-  (OpenAI, Google, etc.) and provide credentials as environment variables.
+- Runs in MOCK mode (no external API calls) by default so it is safe to run in
+  Kaggle notebooks.
+- To enable a real LLM, implement the LLM.call method (OpenAI, Google, etc.)
+  and provide credentials as environment variables.
 
-Key classes:
-- LLM (interface wrapper) -- pluggable; default is MockLLM
-- IntentAgent
-- ReplyAgent
-- EscalationAgent
-- Coordinator
-- SessionService, MemoryBank
-- TicketStore (custom tool to persist tickets)
+Features showcased:
+- Multi-agent flows: goal analysis -> planning -> content generation (quizzes/flashcards)
+- Memory persistence: tracks student progress and difficulty
+- Long-running ops: simulated spaced repetition scheduling
+- Observability: metrics for generated quizzes and review suggestions
 
-Run the file directly to execute the demo and tests.
+Run this file to execute the demo and unit tests.
 """
 
 from __future__ import annotations
-import re
 import json
+import os
+import re
 import time
 import uuid
 import logging
-from typing import Dict, Any, List, Optional, Tuple
-import os
+from typing import Dict, Any, List, Optional
 
 # ---------------------------
-# Observability (logging/metrics)
+# Observability
 # ---------------------------
 logging.basicConfig(level=logging.INFO, format='[%(asctime)s] %(levelname)s: %(message)s')
-logger = logging.getLogger('multiagent-support')
+logger = logging.getLogger('multiagent-study')
 
 metrics = {
-    'total_messages': 0,
-    'escalations': 0,
-    'auto_replies': 0,
+    'total_requests': 0,
+    'quizzes_generated': 0,
+    'reviews_scheduled': 0,
 }
 
 # ---------------------------
-# Simple pluggable LLM interface
+# Simple LLM interface and MockLLM
 # ---------------------------
-
 class LLM:
-    """Abstract LLM interface. Implement `call` to integrate a real model."""
     def call(self, prompt: str, system: Optional[str] = None) -> str:
         raise NotImplementedError
 
 class MockLLM(LLM):
-    """A deterministic mock LLM using simple heuristics for demo and tests."""
+    """Heuristic mock LLM used for demonstration and tests."""
     def call(self, prompt: str, system: Optional[str] = None) -> str:
-        # Use lightweight heuristics to simulate classification/generation
-        txt = (system or "") + "\n" + prompt
+        txt = (system or '') + '\n' + prompt
         txt = txt.lower()
-        if 'classify intent' in system.lower() or 'identify the intent' in prompt.lower():
-            # Simple keyword mapping
-            if 'refund' in txt or 'money back' in txt:
-                return json.dumps({'intent': 'refund', 'urgency': 'high', 'confidence': 0.93})
-            if 'cancel' in txt or 'unsubscribe' in txt:
-                return json.dumps({'intent': 'cancellation', 'urgency': 'high', 'confidence': 0.95})
-            if 'invoice' in txt or 'bill' in txt or 'amount' in txt:
-                return json.dumps({'intent': 'billing', 'urgency': 'medium', 'confidence': 0.88})
-            if 'not working' in txt or 'bug' in txt or 'error' in txt:
-                return json.dumps({'intent': 'technical', 'urgency': 'high', 'confidence': 0.90})
-            # default fallback
-            return json.dumps({'intent': 'general_inquiry', 'urgency': 'low', 'confidence': 0.60})
-        if 'generate reply' in system.lower() or 'reply' in prompt.lower():
-            # Generate canned reply templates based on detected intent
-            if 'refund' in txt:
-                return "We're sorry to hear that. To start your refund, please provide your order number and the email used to purchase."
-            if 'cancellation' in txt:
-                return "I can help with cancellation. Please confirm your account email and I'll process the cancellation immediately."
-            if 'billing' in txt:
-                return "Thanks for contacting billing. Can you share the invoice number and a screenshot of the charge? We'll investigate right away."
-            if 'technical' in txt:
-                return "Sorry for the trouble — please describe the steps to reproduce the issue and include any error messages or screenshots. We'll escalate to engineering if needed."
-            return "Thanks for reaching out — could you provide more details so we can help?"
-        if 'should escalate' in system.lower() or 'escalate' in prompt.lower():
-            # Very simple logic based on urgency & confidence inside prompt
-            if 'high' in txt and '0.' in txt:
-                return json.dumps({'escalate': True, 'reason': 'High urgency (auto-detected) and suggested human review.'})
-            if 'billing' in txt and 'confidence' in txt:
-                return json.dumps({'escalate': False, 'reason': 'Billing can be handled by automated workflow.'})
-            return json.dumps({'escalate': False, 'reason': 'No escalation necessary.'})
-        # Default fallback
-        return "I don't understand the request."
+        # Goal analysis
+        if 'analyze goals' in (system or '').lower() or 'what are the study goals' in prompt.lower():
+            # find exam/topic/duration keywords
+            topic = 'general'
+            days = 7
+            match = re.search(r'exam|exam in (\d+)', prompt.lower())
+            if 'final' in txt:
+                topic = 'finals'
+                days = 14
+            num_match = re.search(r'(\d+) days', prompt.lower())
+            if num_match:
+                days = int(num_match.group(1))
+            return json.dumps({'topic': topic, 'days_until_exam': days, 'priority': 'high' if days < 7 else 'medium'})
+        # Planner
+        if 'create plan' in (system or '').lower() or 'generate schedule' in prompt.lower():
+            # simple schedule: distribute sessions across days
+            plan = []
+            for i in range(1,6):
+                plan.append({'day': i, 'sessions': [f'Read chapter {i}', f'Practice problems {i}']})
+            return json.dumps({'plan': plan})
+        # Quiz generation
+        if 'generate quiz' in (system or '').lower() or 'make a quiz' in prompt.lower():
+            metrics['quizzes_generated'] += 1
+            q = [
+                {'q': 'What is the definition of X?', 'a': 'Definition of X'},
+                {'q': 'List 3 examples of Y', 'a': 'example1; example2; example3'}
+            ]
+            return json.dumps({'quiz': q})
+        # Flashcards / review
+        if 'create flashcards' in (system or '').lower() or 'flashcards' in prompt.lower():
+            return json.dumps({'cards': [{'front': 'Term A', 'back': 'Definition A'}, {'front': 'Term B', 'back': 'Definition B'}]})
+        # Scheduling review
+        if 'schedule review' in (system or '').lower() or 'when should they review' in prompt.lower():
+            metrics['reviews_scheduled'] += 1
+            return json.dumps({'next_review_days': 2})
+        # Fallback
+        return 'I do not understand.'
 
 # ---------------------------
-# Memory & Sessions
+# Sessions & Memory
 # ---------------------------
-
 class SessionService:
-    """Simple session service: map session_id -> messages list"""
     def __init__(self):
         self.sessions: Dict[str, List[Dict[str, Any]]] = {}
 
     def new_session(self) -> str:
         sid = str(uuid.uuid4())
         self.sessions[sid] = []
-        logger.debug(f'New session created: {sid}')
+        logger.debug(f'New session: {sid}')
         return sid
 
     def append_message(self, session_id: str, role: str, content: str):
@@ -122,7 +119,6 @@ class SessionService:
         return self.sessions.get(session_id, [])
 
 class MemoryBank:
-    """Long term memory: store persistent customer summaries by customer_id"""
     def __init__(self, path: Optional[str] = None):
         self.mem: Dict[str, Dict[str, Any]] = {}
         self.path = path
@@ -130,17 +126,17 @@ class MemoryBank:
             try:
                 with open(path, 'r') as f:
                     self.mem = json.load(f)
-                    logger.info('MemoryBank loaded from ' + path)
+                    logger.info('MemoryBank loaded')
             except Exception as e:
-                logger.warning('Failed to load MemoryBank: ' + str(e))
+                logger.warning('Failed to load memory: ' + str(e))
 
-    def get(self, customer_id: str) -> Dict[str, Any]:
-        return self.mem.get(customer_id, {})
+    def get(self, student_id: str) -> Dict[str, Any]:
+        return self.mem.get(student_id, {})
 
-    def update(self, customer_id: str, data: Dict[str, Any]):
-        existing = self.mem.get(customer_id, {})
+    def update(self, student_id: str, data: Dict[str, Any]):
+        existing = self.mem.get(student_id, {})
         existing.update(data)
-        self.mem[customer_id] = existing
+        self.mem[student_id] = existing
         if self.path:
             with open(self.path, 'w') as f:
                 json.dump(self.mem, f, indent=2)
@@ -148,287 +144,236 @@ class MemoryBank:
 # ---------------------------
 # Tools
 # ---------------------------
-class TicketStore:
-    """Simple file-backed ticket store used as a custom tool."""
-    def __init__(self, path: str = 'tickets.json'):
+class ProgressStore:
+    def __init__(self, path: str = 'progress.json'):
         self.path = path
         if not os.path.exists(self.path):
             with open(self.path, 'w') as f:
                 json.dump([], f)
 
-    def save_ticket(self, ticket: Dict[str, Any]) -> str:
+    def save_progress(self, record: Dict[str, Any]) -> str:
         with open(self.path, 'r') as f:
-            tickets = json.load(f)
-        ticket_id = str(uuid.uuid4())
-        ticket['ticket_id'] = ticket_id
-        tickets.append(ticket)
+            data = json.load(f)
+        rec_id = str(uuid.uuid4())
+        record['id'] = rec_id
+        data.append(record)
         with open(self.path, 'w') as f:
-            json.dump(tickets, f, indent=2)
-        logger.info(f"Ticket saved: {ticket_id}")
-        return ticket_id
+            json.dump(data, f, indent=2)
+        logger.info(f'Progress saved: {rec_id}')
+        return rec_id
 
 # ---------------------------
 # Agents
 # ---------------------------
-
-class IntentAgent:
-    """Classifies customer messages into intents and urgency using an LLM."""
+class GoalAgent:
     def __init__(self, llm: LLM):
         self.llm = llm
 
-    def analyze(self, message: str) -> Dict[str, Any]:
-        system = "Classify intent and urgency. Return JSON with fields: intent, urgency (low/medium/high), confidence (0-1)."
-        prompt = f"Identify the intent and urgency for this message:\n---\n{message}\n---\nRespond only with JSON."
+    def analyze(self, prompt: str) -> Dict[str, Any]:
+        system = 'Analyze goals: identify topic, days_until_exam, and priority. Return JSON.'
         raw = self.llm.call(prompt, system=system)
-        logger.debug('IntentAgent raw: ' + str(raw))
-        # Attempt parse
         try:
-            data = json.loads(raw)
-            logger.info(f"IntentAgent: intent={data.get('intent')} urgency={data.get('urgency')} confidence={data.get('confidence')}")
-            return data
+            res = json.loads(raw)
+            logger.info(f'GoalAgent: {res}')
+            return res
         except Exception:
-            # Fallback heuristic
-            intent = 'general_inquiry'
-            urgency = 'low'
-            if re.search(r'refund|money back', message, re.I):
-                intent = 'refund'; urgency = 'high'
-            elif re.search(r'cancel|unsubscribe', message, re.I):
-                intent = 'cancellation'; urgency = 'high'
-            elif re.search(r'invoice|bill|charge|amount', message, re.I):
-                intent = 'billing'; urgency = 'medium'
-            elif re.search(r'not working|error|bug|fail', message, re.I):
-                intent = 'technical'; urgency = 'high'
-            logger.info(f"IntentAgent (fallback): intent={intent} urgency={urgency}")
-            return {'intent': intent, 'urgency': urgency, 'confidence': 0.6}
+            logger.info('GoalAgent fallback')
+            return {'topic': 'general', 'days_until_exam': 7, 'priority': 'medium'}
 
-class ReplyAgent:
-    """Generates a professional support reply given the message and intent."""
+class PlannerAgent:
     def __init__(self, llm: LLM):
         self.llm = llm
 
-    def generate(self, message: str, intent: str, memory: Dict[str, Any]) -> str:
-        system = "Generate reply: produce a short professional customer support response. Keep it concise (1-3 sentences)."
-        prompt = f"Customer message:\n{message}\n\nDetected intent: {intent}\nCustomer memory: {json.dumps(memory)}\n\nGenerate reply."
+    def create_plan(self, topic: str, days: int) -> Dict[str, Any]:
+        system = 'Create plan: generate a study plan JSON distributing topics across days.'
+        prompt = f'Topic: {topic}\nDays: {days}\nGenerate schedule plan as JSON.'
         raw = self.llm.call(prompt, system=system)
-        logger.info('ReplyAgent produced reply')
-        return raw.strip()
-
-class EscalationAgent:
-    """Decides whether to escalate to human support."""
-    def __init__(self, llm: LLM):
-        self.llm = llm
-
-    def decide(self, intent: str, urgency: str, confidence: float) -> Dict[str, Any]:
-        system = "Decide whether to escalate a ticket to human support. Return JSON {escalate: bool, reason: str}."
-        prompt = f"Intent: {intent}\nUrgency: {urgency}\nConfidence: {confidence}\n\nShould escalate? Answer JSON."
-        raw = self.llm.call(prompt, system=system)
-        logger.debug('EscalationAgent raw: ' + str(raw))
         try:
-            data = json.loads(raw)
-            logger.info(f"EscalationAgent: escalate={data.get('escalate')} reason={data.get('reason')}")
-            return data
+            plan = json.loads(raw)
+            logger.info('PlannerAgent created plan')
+            return plan
         except Exception:
-            # Simple rule-based fallback
-            escalate = False
-            reason = 'No escalation needed.'
-            if urgency == 'high' and confidence < 0.8:
-                escalate = True
-                reason = 'High urgency with low confidence; human review recommended.'
-            if intent in ('refund', 'cancellation') and urgency == 'high':
-                escalate = True
-                reason = 'Refund or cancellation: policy requires human oversight.'
-            logger.info(f"EscalationAgent (fallback): escalate={escalate} reason={reason}")
-            return {'escalate': escalate, 'reason': reason}
+            logger.info('PlannerAgent fallback')
+            return {'plan': [{'day': 1, 'sessions': ['Intro', 'Practice']}]}
+
+class QuizAgent:
+    def __init__(self, llm: LLM):
+        self.llm = llm
+
+    def generate_quiz(self, topic: str, difficulty: str = 'medium') -> Dict[str, Any]:
+        system = 'Generate quiz: produce JSON with a list of Q/A pairs.'
+        prompt = f'Create a short quiz for {topic} at {difficulty} difficulty.'
+        raw = self.llm.call(prompt, system=system)
+        try:
+            quiz = json.loads(raw)
+            logger.info('QuizAgent generated quiz')
+            return quiz
+        except Exception:
+            logger.info('QuizAgent fallback')
+            return {'quiz': [{'q': 'Sample Q?', 'a': 'Sample A'}]}
+
+class ReviewAgent:
+    def __init__(self, llm: LLM):
+        self.llm = llm
+
+    def schedule_review(self, performance: Dict[str, Any]) -> Dict[str, Any]:
+        system = 'Schedule review: return JSON {next_review_days: int}.'
+        prompt = f'Performance: {json.dumps(performance)}\nWhen should they review?'
+        raw = self.llm.call(prompt, system=system)
+        try:
+            res = json.loads(raw)
+            logger.info('ReviewAgent scheduled review')
+            return res
+        except Exception:
+            logger.info('ReviewAgent fallback')
+            return {'next_review_days': 2}
 
 # ---------------------------
-# Coordinator (orchestration + A2A simple protocol)
+# Coordinator
 # ---------------------------
-
 class Coordinator:
-    def __init__(self, llm: LLM, ticket_store: TicketStore, memory_bank: MemoryBank, session_service: SessionService):
-        self.intent_agent = IntentAgent(llm)
-        self.reply_agent = ReplyAgent(llm)
-        self.escalation_agent = EscalationAgent(llm)
-        self.ticket_store = ticket_store
+    def __init__(self, llm: LLM, progress_store: ProgressStore, memory_bank: MemoryBank, sessions: SessionService):
+        self.goal_agent = GoalAgent(llm)
+        self.planner = PlannerAgent(llm)
+        self.quiz_agent = QuizAgent(llm)
+        self.review_agent = ReviewAgent(llm)
+        self.progress_store = progress_store
         self.memory_bank = memory_bank
-        self.session_service = session_service
+        self.sessions = sessions
 
-    def handle_message(self, message: str, customer_id: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
-        metrics['total_messages'] += 1
-        logger.info('Coordinator received message')
-        # ensure session
+    def handle_request(self, user_prompt: str, student_id: Optional[str] = None, session_id: Optional[str] = None) -> Dict[str, Any]:
+        metrics['total_requests'] += 1
+        logger.info('Coordinator received study request')
         if session_id is None:
-            session_id = self.session_service.new_session()
-        # append to session
-        self.session_service.append_message(session_id, 'user', message)
+            session_id = self.sessions.new_session()
+        self.sessions.append_message(session_id, 'user', user_prompt)
 
-        # Step 1: Intent analysis
-        intent_res = self.intent_agent.analyze(message)
-        intent = intent_res.get('intent')
-        urgency = intent_res.get('urgency')
-        confidence = float(intent_res.get('confidence', 0.0))
+        # Goal analysis
+        goal = self.goal_agent.analyze(user_prompt)
+        topic = goal.get('topic', 'general')
+        days = int(goal.get('days_until_exam', 7))
 
-        # Step 2: Generate reply
-        customer_memory = self.memory_bank.get(customer_id or 'anonymous')
-        reply = self.reply_agent.generate(message, intent, customer_memory)
+        # Planning
+        plan = self.planner.create_plan(topic, days)
 
-        # Step 3: Escalation decision
-        esc = self.escalation_agent.decide(intent, urgency, confidence)
+        # Generate initial quiz and flashcards
+        quiz = self.quiz_agent.generate_quiz(topic)
+        flashcards = {'cards': [{'front': 'Term X', 'back': 'Definition X'}]}
 
-        # Step 4: Persist ticket via tool
-        ticket = {
-            'customer_id': customer_id,
+        # Save progress/tool usage
+        record = {
+            'student_id': student_id,
+            'topic': topic,
+            'plan_summary': plan,
+            'quiz_summary': quiz,
+            'ts': time.time(),
+        }
+        rec_id = self.progress_store.save_progress(record)
+
+        # Update memory
+        if student_id:
+            existing = self.memory_bank.get(student_id)
+            contacts = existing.get('sessions', 0) + 1
+            self.memory_bank.update(student_id, {'last_plan_id': rec_id, 'sessions': contacts, 'topic': topic})
+
+        res = {
             'session_id': session_id,
-            'message': message,
-            'intent': intent,
-            'urgency': urgency,
-            'confidence': confidence,
-            'reply': reply,
-            'escalate': esc.get('escalate'),
-            'escalation_reason': esc.get('reason'),
-            'ts': time.time()
+            'student_id': student_id,
+            'goal': goal,
+            'plan': plan,
+            'quiz': quiz,
+            'flashcards': flashcards,
+            'progress_record_id': rec_id,
         }
-        ticket_id = self.ticket_store.save_ticket(ticket)
-
-        # Update memory sample: increment contact count
-        if customer_id:
-            existing = self.memory_bank.get(customer_id)
-            cnt = existing.get('contacts', 0) + 1
-            self.memory_bank.update(customer_id, {'last_ticket': ticket_id, 'contacts': cnt})
-
-        # Observability updates
-        if esc.get('escalate'):
-            metrics['escalations'] += 1
-        else:
-            metrics['auto_replies'] += 1
-
-        # Final JSON package
-        result = {
-            'ticket_id': ticket_id,
-            'intent': intent,
-            'urgency': urgency,
-            'confidence': confidence,
-            'reply': reply,
-            'escalate': esc.get('escalate'),
-            'escalation_reason': esc.get('reason'),
-            'session_id': session_id
-        }
-        logger.info('Coordinator completed orchestration')
-        return result
+        logger.info('Coordinator completed study orchestration')
+        return res
 
 # ---------------------------
-# Simple evaluation harness
+# Evaluation harness & demo
 # ---------------------------
 
-def evaluate_system(coordinator: Coordinator, test_cases: List[Dict[str, Any]]) -> Dict[str, Any]:
+def evaluate_system(coord: Coordinator, tests: List[Dict[str, Any]]) -> Dict[str, Any]:
     results = []
-    correct_intent = 0
-    for tc in test_cases:
-        out = coordinator.handle_message(tc['message'], customer_id=tc.get('customer_id'))
-        results.append({'input': tc['message'], 'expected_intent': tc['intent'], 'predicted_intent': out['intent'], 'escalate': out['escalate']})
-        if out['intent'] == tc['intent']:
-            correct_intent += 1
-    acc = correct_intent / len(test_cases)
-    logger.info(f'Evaluation complete. Intent accuracy: {acc:.2f}')
-    return {'accuracy': acc, 'results': results}
+    for t in tests:
+        out = coord.handle_request(t['prompt'], student_id=t.get('student_id'))
+        results.append({'prompt': t['prompt'], 'goal': out['goal'], 'plan_exists': bool(out['plan'])})
+    logger.info('Evaluation complete')
+    return {'results': results}
 
-# ---------------------------
-# Demo / test cases
-# ---------------------------
 
 def demo_mode(llm: LLM):
-    ticket_store = TicketStore('demo_tickets.json')
-    memory_bank = MemoryBank('demo_memory.json')
+    progress = ProgressStore('demo_progress.json')
+    memory = MemoryBank('demo_study_memory.json')
     sessions = SessionService()
-    coord = Coordinator(llm, ticket_store, memory_bank, sessions)
+    coord = Coordinator(llm, progress, memory, sessions)
 
     samples = [
-        {'message': 'I need a refund for my order, it arrived late and damaged', 'intent': 'refund', 'customer_id': 'alice'},
-        {'message': 'Please cancel my subscription immediately', 'intent': 'cancellation', 'customer_id': 'bob'},
-        {'message': 'My invoice shows a wrong amount on invoice #1234', 'intent': 'billing', 'customer_id': 'carol'},
-        {'message': 'The app crashes every time I open it', 'intent': 'technical', 'customer_id': 'dave'},
-        {'message': 'How do I change my password?', 'intent': 'general_inquiry', 'customer_id': 'eve'},
+        {'prompt': 'I have a math final in 10 days, help me study derivatives', 'student_id': 's1'},
+        {'prompt': 'I need to prepare for a history exam in 5 days covering WW2', 'student_id': 's2'},
     ]
 
-    # Run evaluation
     eval_res = evaluate_system(coord, samples)
     print('\n=== Evaluation ===')
-    print('Accuracy:', eval_res['accuracy'])
-    for r in eval_res['results']:
-        print(json.dumps(r, indent=2))
-
-    # Show metrics and memory
+    print(json.dumps(eval_res, indent=2))
     print('\n=== Metrics ===')
     print(json.dumps(metrics, indent=2))
-    print('\n=== Memory Bank ===')
-    print(json.dumps(memory_bank.mem, indent=2))
+    print('\n=== Memory ===')
+    print(json.dumps(memory.mem, indent=2))
 
 # ---------------------------
-# If user wants to swap in a real LLM (OpenAI example)
+# OpenAIStub placeholder
 # ---------------------------
-
 class OpenAIStub(LLM):
     def __init__(self, api_key: Optional[str] = None):
-        # This is a stub showing where you'd put your real call.
         self.api_key = api_key or os.environ.get('OPENAI_API_KEY')
 
     def call(self, prompt: str, system: Optional[str] = None) -> str:
-        # Replace this with real OpenAI/Google API code in your notebook environment.
-        raise RuntimeError('OpenAIStub.call invoked. Replace with real API call in your environment.')
+        raise RuntimeError('Replace OpenAIStub.call with your provider API code.')
 
 # ---------------------------
 # Main
 # ---------------------------
-
 if __name__ == '__main__':
-    print('Starting LLM Multi-Agent Customer Support Assistant demo (MOCK LLM)')
+    print('Starting LLM Multi-Agent Study Assistant demo (MOCK LLM)')
     llm = MockLLM()
     demo_mode(llm)
-
-    print('\nNotebook/demo complete. To use a real LLM, implement OpenAIStub.call or another LLM wrapper and re-run.')
-
+    print('\nDemo complete. To use a real LLM, implement OpenAIStub.call or another LLM wrapper and re-run.')
 
 # ---------------------------
-# Final write-up (for Kaggle submission)
+# README (for Kaggle submission)
 # ---------------------------
-# The content below is intended to be copied into your Kaggle competition writeup or README.
-# It is intentionally short here because the main README should expand on architecture, evaluation,
-# and how to run the notebook.
-# ---------------------------
-
 README = '''
-Project: LLM Multi-Agent Customer Support Assistant
+Project: LLM Multi-Agent Study Assistant
 
 Overview
 --------
-This project showcases a multi-agent customer support assistant built for the Enterprise Agents track.
-The system uses an LLM to power three specialized agents: IntentAgent, ReplyAgent, and EscalationAgent.
-A Coordinator orchestrates the flow, a MemoryBank stores customer state, and a TicketStore acts as a
-custom tool for persisting tickets.
+This project demonstrates a study assistant built as a coordinated multi-agent
+system. Agents include GoalAgent (understands student goals), PlannerAgent
+(generates schedules), QuizAgent (creates quizzes), and ReviewAgent
+(schedules spaced repetition). A Coordinator orchestrates agents and stores
+progress in a simple tool.
 
 How to run
 ----------
-1. Run this file in a Python environment. It runs in MOCK mode by default.
-2. To enable a real LLM, implement the LLM.call method in a provider-specific subclass and provide
-   your API credentials securely.
+- Run this file in a Python environment; it runs with a MockLLM by default.
+- To enable a real model, implement an LLM subclass with your provider calls.
 
-Demonstrated features
+Features demonstrated
 ---------------------
-- Multi-agent system and orchestration
-- Custom tool (TicketStore) and memory (MemoryBank)
-- Sessions (SessionService)
-- Observability (logging + metrics)
-- Agent evaluation via a simple test harness
+- Multi-agent orchestration
+- Custom tool: ProgressStore
+- Sessions & MemoryBank
+- Metrics & lightweight evaluation
+- Extensible design for real LLM integration
 
-Future improvements
--------------------
-- Replace MockLLM with real LLM calls and secure API key handling
-- Add richer memory (vector DB) and context compaction
-- Add observability stack integration (OpenTelemetry)
-- Add A/B evaluation and user feedback loop for continuous improvement
+Future work
+-----------
+- Swap MockLLM for a real LLM and fine-tune prompts
+- Add richer flashcard generation and spaced-repetition algorithm
+- Integrate calendar APIs and push notifications
+- Add evaluation against student performance data
 '''
 
-# Optionally save README to a file
-with open('README_MULTIAGENT.md', 'w') as f:
+with open('README_STUDY.md', 'w') as f:
     f.write(README)
 
